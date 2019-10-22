@@ -1,0 +1,454 @@
+---
+title: "MovieLens Project"
+author: "Su Lin"
+date: "Sep 18, 2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = TRUE, echo = FALSE, comment = NA, warning=FALSE, message=FALSE)
+```
+
+***
+*Dear peers, before we get started, I would like to thank you for your time and effort spent on my project report. If any concerns or comments, please feel free to shoot me an email at su.linwower@hotmail.com. *
+***
+
+# 1. Project Overview
+
+The project is for Capstone, the final course of *[Edx HarvardX Data Science Professional Certificate Program](https://www.edx.org/professional-certificate/harvardx-data-science)*, which I like very much, and I have learnt and enjoyed much along the journey with Professor Irizarry and my peers.
+
+The aim of this project is to built a movie recommdation system using the *[10M version of the MovieLens dataset](https://grouplens.org/datasets/movielens/10m/)*, which will use about 90% of the data to train a machine learning algorithm, and predict movie ratings for all movie-user combinations in the rest of data which is a validation or test set. The 10M MovieLens data includes 10,000,054 ratings for 10,677 movies by 69,878 users. Our project goal is to minimize the loss functiom RMSE, better lower than 0.8649. 
+
+The method used here is much the same as Professor Irizarry instructed during the eighth course of the program series, Machine Learning, which is the combination of baseline predictors, regularization and matrix factorization. Code details can be found in the corresponding R script file. Key steps performed are as following.
+
+  1. Create train and validation sets (same code as provided in the course)
+  2. Data wrangling and exploration
+  3. Train with cross-validation to built a model
+  4. Predict on test set and evaluate with RMSE
+
+The PC used here is a Intel(R) Core(TM) i5-6200U 2.30GHz, RAM 8.00G laptop. 
+
+To speed up the process of converting the R Markdown file to PDF document, most code chunks for intermediate results are omitted here, and results produced for presenting in the report are saved in the working directory. For code details, please refer to the corresponding R script file. 
+
+# 2. Analysis
+
+## Create train and validation sets
+
+Following the code provided in the course, omitted here (included in the R script file), two data sets are created with **edx** for training and **validation** for testing, basic information of the two data sets are shown as below. All varaible names are very plain, except *timestamp* which is rating date and time stored as integer.
+```{r basic_info, echo=FALSE, eval=TRUE}
+load("edx.Rda")
+load("validation.Rda")
+
+knitr::kable(head(edx), caption = "Sample data from edx")
+data_dim <- rbind(dim(edx),dim(validation))
+colnames(data_dim) <- c("no of records", "no of variables")
+rownames(data_dim) <- c("edx", "validation")
+knitr::kable(data_dim, caption = "Dimensions of edx and validation")
+```
+
+The two date sets are saved as Rda files under the working directory for future use to avoid downloading the same data every time. 
+
+## Data wrangling and exploration
+
+As shown above, the two data sets are quite tidy, but still can be further cleaned to faciliate the analysis and reduce the file size. After wrangling, **edx** set is saved as **training_set**, and **validation** set is saved as **test_set**. Below is how **training_set** looks, and **test_set** shares the same structure. 
+
+```{r cleaned_data, echo=FALSE, eval=TRUE}
+load("training_set.Rda")
+load("test_set.Rda")
+
+knitr::kable(head(training_set), caption = "Sample data from training_set")
+rm(edx, validation)
+```
+
+The two cleaned data sets are also saved as Rda files to built the model during the following days. From now on, only **training_set** is used for exploration and training, as for **test_set**, it will be used for validation after the model is complete, so we pretend that we do not have this data set now.
+
+First of all, let us start with some EDA (exploratory data analysis) with data visualisation and basic summary of statistics of the data. 
+
+```{r EDA1, fig.width= 4, fig.height= 3, fig.align='center', echo=FALSE, eval=TRUE}
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(data.table)
+library(graphics)
+library(Matrix)
+library(irlba)
+library(recosystem)
+
+training_set %>% 
+  ggplot(aes(rating)) + 
+  geom_histogram(fill = "#56B4E9", bins = 10) + 
+  ggtitle("Chart 1: Rating Distribution") + 
+  ylab("no of ratings")
+```
+
+```{r EDA2, fig.width=12, fig.height=6, fig.align='center', echo=FALSE, eval=TRUE}
+
+# EDA (exploratory data analysis) rating distribution 
+p1 <- training_set %>% 
+  group_by(movieId) %>% 
+  summarise(movie_avg_rating = mean(rating)) %>%
+  ggplot(aes(movie_avg_rating)) + 
+  geom_histogram(bins = 50, fill = "#56B4E9") + 
+  ggtitle("Chart 2: Movie Avg Rating Distribution") + 
+  ylab("no of movies")
+
+p2 <- training_set %>% 
+  group_by(movieId) %>% 
+  summarise(movie_avg_rating = mean(rating)) %>%
+  ggplot(aes(sample = movie_avg_rating)) + 
+  geom_qq() + geom_qq_line() + 
+  ggtitle("Chart 3: Movie Avg Rating QQ plot") 
+
+p3 <- training_set %>% 
+  group_by(userId) %>% 
+  summarise(user_avg_rating = mean(rating)) %>%
+  ggplot(aes(user_avg_rating)) + 
+  geom_histogram(bins = 50, fill = "#56B4E9") + 
+  ggtitle("Chart 4: User Avg Rating Distribution") + 
+  ylab("no of users")
+
+p4 <- training_set %>% 
+  group_by(userId) %>% 
+  summarise(user_avg_rating = mean(rating)) %>%
+  ggplot(aes(sample = user_avg_rating)) + 
+  geom_qq() + geom_qq_line() + 
+  ggtitle("Chart 5: User Avg Rating QQ plot") 
+
+grid.arrange(p1, p2, p3, p4, nrow=2)
+
+# summary of basic statistics
+
+rating <- summary(training_set$rating)
+
+movie_avg_rating <- summary(training_set %>% 
+                              group_by(movieId) %>% 
+                              summarise(movie_avg_rating = mean(rating)) %>% 
+                              pull(movie_avg_rating))
+
+user_avg_rating <- summary(training_set %>% 
+                             group_by(userId) %>% 
+                             summarise(user_avg_rating = mean(rating)) %>% 
+                             pull(user_avg_rating))
+
+knitr::kable(rbind(rating, movie_avg_rating, user_avg_rating), caption = "Summary of Statistics")
+rm(p1, p2, p3, p4, rating, movie_avg_rating, user_avg_rating)
+```
+
+From above histograms and basic statistics, we know that 3-4 ratings predominate in the **training_set** with mean at 3.512465. For the average rating of each movie, it is clearly left-skewed based on the QQ plot (Pic.3). We see that average rating varies from movie to movie, which makes sence, cause most movies are moderate, and great movies are less than boring ones. The distribution of average rating of each user is also left_skewed, and the rating also has a user effect or bias.
+
+## Train with cross-validation to built a model
+
+### Naive model
+
+With above findings and what we have learnt during the Machine Learning course*[1]*, we build our first and simplest model by predicting all movie-user combinations with overall average rating $\hat{\mu}$, then our model is 
+$$
+\tag{1}
+r_{u,i} = \mu + \varepsilon_{u,i}
+$$
+where $r_{u,i}$ is the real rating for user u and movie i, $\mu$ is the real average rating for all movie-user combinations, and $\varepsilon_{u,i}$ is independent error with 0 mean. We learnt that the least squares estimate of $\mu$ is the overall average rating of our **training_set**, $\hat{\mu}$, so our predicted $r_{u,i}$ is $\hat{r_{u,i}}$ = $\hat{\mu}$. Based on the definition of RMSE as below with $N$ being the number of user-movie combinations, we can evaluate our model's performance. 
+$$
+\tag{2}
+RMSE=\sqrt{\frac{1}{N}\sum_{u,i}(r_{u,i}-\hat{r_{u,i}})^2}
+$$
+```{r naive_model, echo=FALSE, eval=TRUE, comment=NA}
+mu_hat <- mean(training_set$rating)
+print(paste0("Overall average rating is ", mu_hat))
+naive_rmse <- RMSE(test_set$rating, rep(mu_hat, length(test_set$rating)))
+print(paste0("RMSE is ", naive_rmse))
+rm(naive_rmse, mu_hat)
+```
+From above, we know that naive model's error is larger than one star, and is quite bigger than our goal of lowering it to less than 0.8649. Since EDA reveals that rating varies from movie to movie, and from user to user, we should also consider those effects in our model. 
+
+### Baseline model
+
+The predictors in below model are called baseline predictors in *[2]*.
+$$
+\tag{3}
+\hat{r_{u,i}} = \hat{\mu} + \hat{b_{u}} + \hat{b{i}}
+$$
+where $\hat{b_u}$ is the estimated value of user bias $b_u$, and $\hat{b_i}$ is the estimated value of movie bias $b_i$. In order to "penalize large estimates that are formed using small sample sizes"*[1]*, regularization is used. These two estimates can be got by solving the least squares problem as below with gradient descent.
+$$
+\tag{4}
+\underset{b_{u},b_{i}}{\operatorname{min}} \sum_{u,i}(r_{u,i}-\hat{\mu} - \hat{b_u} - \hat{b_i})^2 + \lambda(\sum_{u}\hat{b_u}^2 + \sum_{i}\hat{b_i}^2) 
+$$
+Other than gradient descent, there is another way, much easier and quicker, to estimate the parameters by decoupling the calculation of the $b_i$’s from the calculation of the $b_u$’s as shown below*[2]*, where $R(i)$ is the set of users who rated movie $i$, and $R(u)$ is the set of movies that user $u$ have rated. 
+
+We use this decoupling method to calculate bias parameters through out this report which is the same as what we have learnt during Machine Learning course.
+$$
+\tag{5}
+\begin{aligned}
+\hat{b_{i}}&=\frac{\sum_{u \in R(i)}(r_{u,i} - \hat{\mu})}{\lambda + |R(i)|} \\ 
+\hat{b_{u}}&=\frac{\sum_{i \in R(u)}(r_{u,i} - \hat{\mu} - \hat{b_i})}{\lambda + |R(u)|}
+\end{aligned}
+$$
+Since $\lambda$, the regularization parameter, is tunable, we can use cross-validation to find the best one that minimizes cross-validation set's RMSE. In order to do this without using **test_set**, a **train_set** (for training) and a **cv_set** (for cross-validation) are created from **training_set** via below codes. 
+```{r create_cv_set, eval=FALSE, echo=TRUE}
+# train_set and cv_set are created from training_set
+set.seed(1)
+cv_index <- createDataPartition(y = training_set$rating, times = 1, p = 0.1, list = FALSE)
+train_set <- training_set[-cv_index,]
+temp <- training_set[cv_index,]
+
+# make sure userId and movieId in cv_set are also in train_set
+cv_set <- temp %>% semi_join(train_set, by = "movieId") %>% semi_join(train_set, by = "userId")
+
+# add rows removed from cv_set back into train_set
+removed <- anti_join(temp, cv_set)
+train_set <- rbind(train_set, removed)
+rm(cv_index, removed, temp)
+```
+During the tuning process, we found below relationship between $\lambda$ and RMSE, so when $\lambda$ = 4.85, we get the minimun RMSE for cross-validation set. Now we can insert the best $\lambda$ we got into formulas (5) to get $\hat{b_{u}}$ and $\hat{b_i}$ and check the performance of our baseline predictors model with RMSE on **test_set**.
+```{r best_lambda, echo=FALSE, eval=TRUE, fig.width= 4, fig.height= 3, fig.align='center'}
+# plot lambda vs rmse_baseline_reg
+load("lambda_b_tune.Rda")
+load("rmse_baseline_reg.Rda")
+qplot(lambda_b_tune, rmse_baseline_reg, main = "Chart 6: Lambda vs RMSE")
+
+# best lambda that minimizes rmse
+lambda_b <- lambda_b_tune[which.min(rmse_baseline_reg)]
+print(paste0("The best lambda is ", lambda_b))
+rm(rmse_baseline_reg, lambda_b_tune, train_set, cv_set, training_set, test_set)
+
+# validate with test_set
+load("rmse_baseline.Rda")
+print(paste0("RMSE for baseline predictors model is ", rmse_baseline))
+rm(rmse_baseline)
+```
+The RMSE is 0.864819 which achieves our project goal, but there are some unreasonable predictions detected in the results such as:
+```{r unreasonabl_ predictions, echo=FALSE, eval=TRUE}
+load("unreasonable.Rda")
+knitr::kable(unreasonable, caption = "Unreasonable Predictions")
+rm(unreasonable)
+```
+
+known from our data, the highest rating is 5, and the lowest is 0.5, so the prediction 5.9979 from user 36022 for movie 50 is out of rage. Because global mean $\hat{\mu}$ for all movie-user combinations is 3.5125, and moive 50's average rating is 0.8532 higher than global mean, indicating it may be a good movie; further more user 36022's average bias is 1.63219, indicating he or she is not a very choosy viewer; so the summation of these three exceed 5. On the contrary, negative movie bias and user bias may lead to negative ratings or ratings below 0.5, the lower bound. 
+
+Such cases damage our predicting performance, since no mather how much a user loves or hates a certain movie, 5 or 0.5 is the bound that can be given.  So we adjust extreme values based on the bounds, that is if predicted rating is less than 0.5, make it 0.5; if it is higher than 5, make it 5. 
+```{r adjusted_tuning, echo=FALSE, eval=TRUE, fig.width= 4, fig.height= 3, fig.align='center'}
+# plot lambda vs rmse_baseline_reg
+load("lambda_b_tune.Rda")
+load("rmse_baseline_reg_adj.Rda")
+qplot(lambda_b_tune, rmse_baseline_reg_adj, main = "Chart 7: Lambda vs RMSE")
+
+# best lambda that minimizes rmse
+lambda_b <- lambda_b_tune[which.min(rmse_baseline_reg_adj)]
+print(paste0("The best lambda is ", lambda_b))
+rm(lambda_b_tune, rmse_baseline_reg_adj, lambda_b)
+```
+After this adjustment, our $\lambda$ is 4.55, and we can insert this $\lambda$ into formulas (5) again to get new $\hat{b_u}$ and $\hat{b_i}$. 
+```{r adjusted_prediction, echo=FALSE, eval=TRUE}
+# validate with test_set again by adjusting unreasonable predictions
+load("rmse_baseline_adj.Rda")
+print(paste0("RMSE for baseline predictors model is ", rmse_baseline_adj))
+rm(rmse_baseline_adj)
+```
+The corresponding RMSE is 0.864710, a litter better than previous one, but let's see if we can do better. 
+
+### Baseline + time biases model
+
+We can further explore the residuals from our model as below.
+$$
+\tag{6}
+res_{u,i}=r_{u,i}-\hat{r_{u,i}}=r_{u,i}-\hat{\mu}-\hat{b_u}-\hat{b_i}
+$$
+```{r explore_residuals, echo=FALSE, eval=TRUE, fig.width=12, fig.height=6, fig.align='center'}
+# explore the residuals from baseline predictors model
+load("training_temp.Rda")
+
+# residual by release year has a declining trend
+p1 <- training_temp %>% 
+  group_by(release_year) %>% 
+  summarise(avg_res=mean(rating - baseline_pred)) %>% 
+  ggplot(aes(release_year, avg_res)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 90, size = 5)) + 
+  scale_y_continuous(limits = c(-0.06, 0.25)) + 
+  ggtitle("Chart 8: Avg Residual For Each Release Year")
+  
+
+# residual by rating month has a slightly declining trend too
+p2 <- training_temp %>% 
+  mutate(rating_month = round_date(rating_date, unit = "month")) %>% 
+  group_by(rating_month) %>% 
+  summarise(avg_res=mean(rating - baseline_pred)) %>% 
+  ggplot(aes(rating_month, avg_res)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  scale_y_continuous(limits = c(-0.06, 0.25)) + 
+  ggtitle("Chart 9: Avg Residual For Each Rating Month")
+
+grid.arrange(p1, p2, nrow=1)
+rm(p1, p2, training_temp)
+```
+Judging from both scatter plots, a clear declining trend can be seen for average residuals by release year, and a little bit declining trend for average residuals by rating month. So we will take these two new biases into our new model as below, where $\hat{b_{ry}}$ is release year bias, and $\hat{b_{rm}}$ is rating month bias. 
+$$
+\tag{7}
+\hat{r_{u,i}} = \hat{\mu} + \hat{b_{u}} + \hat{b_{i}} + \hat{b_{ry}} + \hat{b_{rm}}
+$$
+We still use regularization to get release year bias estimate and rating month bias estimate with respect to our baseline model's residual, and cross-validate with **cv_set** 
+$$
+\tag{8}
+res_{u,i} = \hat{b_{ry}} + \hat{b_{rm}}
+$$
+Similar as formula (5), these two estimates can be got by decoupling the calculation of the $b_{ry}$’s from the calculation of the $b_{rm}$’s as shown below,  where $R(ry)$ is the set of ratings given by all users to all movies with certain release year $ry$, and $R(rm)$ is the set of ratings given in certain rating month $rm$ by all users to all movies.
+$$
+\tag{9}
+\begin{aligned}
+\hat{b_{ry}}&=\frac{\sum_{u,i \in R(ry)}(r_{u,i} - \hat{\mu} - \hat{b_i} - \hat{b_u})}{\lambda_t + |R(ry)|} \\ 
+\hat{b_{rm}}&=\frac{\sum_{u,i \in R(rm)}(r_{u,i} - \hat{\mu} - \hat{b_i} - \hat{b_u} - \hat{b_{ry}})}{\lambda_t + |R(rm)|}
+\end{aligned}
+$$
+Still $\lambda_{t}$, the regularization parameter, is tunable, we can use cross-validation to find the best one that minimizes the RMSE for cross-validation set.
+```{r time_bias, echo=FALSE, eval=TRUE, fig.width=4, fig.height=3, fig.align='center'}
+# find the minimum rmse 
+load("lambda_t_tune.Rda")
+load("rmse_b_t_reg_tune.Rda")
+qplot(lambda_t_tune, rmse_b_t_reg_tune, main = "Chart 10: Lambda vs RMSE")
+
+# best lambda that minimizes rmse
+lambda_t <- lambda_t_tune[which.min(rmse_b_t_reg_tune)]
+print(paste0("The best lambda is ", lambda_t))
+rm(lambda_t_tune, rmse_b_t_reg_tune, lambda_t)
+```
+The best $\lambda_t$ that minimizes RMSE is 12.5, and we can get $\hat{b_{ry}}$ and $\hat{b_{rm}}$ as regularized estimate of release year bias and regularized estimate of rating month bias respectively, based on formulas (9). Again we validate with **test_set** to see the performance of this baseline + time biases model.
+```{r res_release_year, echo=FALSE, eval=TRUE}
+# validate with test_set
+load("rmse_b_t_reg.Rda")
+print(paste0("RMSE for baseline + time biases model is ", rmse_b_t_reg))
+rm(rmse_b_t_reg)
+```
+The corresponding RMSE drops to 0.8642665, a litter better than beseline model's RMSE 0.864710. 
+
+By now, we have two unsymmetrical regularization parameters, $\lambda$ and $\lambda_t$, what if we regularize them symmetrically? Let's see if this can improve the performance. The formulas used are still the same as (5) and (9), but with the same regularization parameter $\lambda$. 
+```{r reg_once, echo=FALSE, eval=TRUE, fig.width=4, fig.height=3, fig.align='center'}
+# find the minimum rmse with symmetrical regularization
+load("lambda_tune.Rda")
+load("rmse_reg.Rda")
+qplot(lambda_tune, rmse_reg, main = "Chart 11: Lambda vs RMSE")
+
+# best lambda that minimizes rmse
+lambda <- lambda_tune[which.min(rmse_reg)]
+print(paste0("The best lambda is ", lambda))
+rm(lambda_tune, rmse_reg, lambda)
+
+# validate with test_set
+load("rmse_b_t_reg_sym.Rda")
+print(paste0("RMSE for baseline + time predictor model is ", rmse_b_t_reg_sym))
+```
+The best $\lambda$ is 4.75, and corresponding RMSE is 0.8642656, slightly better than the unsymmetrical regularization's RMSE 0.8642665. So the symmetrical regularization way is adopted, and its residual (10) is further analysed to see if there are any latent factors we have not taken into account. 
+$$
+\tag{10}
+res_{u,i}=r_{u,i}-\hat{r_{u,i}}=r_{u,i}-\hat{\mu}-\hat{b_u}-\hat{b_i}-\hat{b_{ry}}-\hat{b_{rm}}
+$$
+
+### Baseline + time biases + SVD model
+
+To do so, some popular movies' and active users' ratings are seleted from **training_set**. Active users means users who rated more than 300 movies, and popular movies are shown at the $y$ axis in below data images. A residual image and an actual rating image are plotted for these movies, from which we can see how different users think of these well-known movies. 
+![Data Image](Image.png)
+```{r res_image, echo=FALSE, eval=TRUE, fig.width=12, fig.height=6, out.width = '100%', fig.align='center'}
+# interactions between users and movies
+load("training_set_modified.Rda")
+corr_check <- training_set_modified %>% group_by(movieId) %>%
+  filter(n() >= 2000) %>% ungroup() %>% group_by(userId) %>% 
+  filter(n() >= 300) %>% ungroup()
+
+corr_check %>% filter(tidy_title == "Shawshank Redemption, The" | 
+                        tidy_title == "Schindler's List" | 
+                        tidy_title %like% "Lord of the Rings:" | 
+                        tidy_title == "Titanic") %>% 
+  arrange(tidy_title) %>% 
+  dplyr::select(userId, tidy_title, rating) %>% 
+  filter(userId %in% c(70078, 24544)) %>% 
+  spread(userId, rating) %>% 
+  mutate(`userId 70078` = `70078`, `userId 24544` = `24544`) %>% 
+  dplyr::select(-`70078`, -`24544`) %>% 
+  knitr::kable(caption = "Interactions between Users and Movies")
+```
+
+From the residual image and actual rating image, we see different users do show divergent preference. For example, some people like *Lord of the Rings* series very much (I am a big fun too), but some people are just not into them. *Titanic*, well-known box office record maker, is clearly not loved by everyone, for example, user 70078 gave *Titanic* a 0.5, but enjoyed *Lord of the Rings* series a lot. *Schindler's List* and *The Shawshank Redemption* are very classic to some, but still not everyone feels the same, for instance, to user 24544, it was just so so. We are not surprised to know this, because in real life it is normal that we have different tastes, but from both images, we see that our baseline + time bias model did not capture those differences, since the pattern of different users' preference is still there, although it is weakened in the residual image, compared with in the actual rating image. It is not surprising to know this, because each parameter we got by now represents only one factor (from user perspective, or movie perspective, or time), and we need a way to express those interactions between users and movies. 
+
+Singular Value Decomposition (SVD) is widely used in Recommendation Systems to find latent factor model, such as these interactions between users and movies. For details, please refer to the eighth course of the program series, Machine Learning, and there is plenty of related info online. 
+
+Here we have our residual matrix $Y$ which is the matrix format of userId/movieId/res triplets in **train_set** with userId as row names and movieId as column names. We want to decompose $Y$, a $m \times n$ real matrix, as the product of three matrix as below, where $U$ is a $m \times f$ user feature matrix, $V$ is a $n \times f$ movie feature matrix, and $\Sigma$ is a $f \times f$ diagonal matrix with singular values on the diagonal. $m$ is the number of users in **train_set**; $n$ is the number of movies; and $f$ is the number of top factors/features contributing the most of all features (or the number of top singular values).
+$$
+\tag{11}
+Y_{m,n}=U_{m,f}\Sigma_f{V_{n,f}}^T
+$$
+Since we have all users and movies in our **train_set**, so $U$ and $V$ have all user features and movie features that we need to predict residuals of baseline + time biases model for **test_set**. 
+
+Because our **train_set** is very big, it will crash R and the laptop, if trying to convert userId/movieId/res triplets to matrix or use *svd* function in *base* package to do SVD for the matrix, here we use *Matrix* package to convert the triplets to sparse matrix, then implement SVD on the sparse matrix with the help of *irlba* package*[3]*.
+
+Since $f$ is a tunable parameter, so as always, we find the best $f$ by cross-validating on the **cv_set**. below chart shows that the minimun RMSE happens at $f$ = 55.
+```{r res_svd, echo=FALSE, eval=TRUE, fig.width=4, fig.height=3, fig.align='center'}
+load("f.Rda")
+load("svd_rmse.Rda")
+qplot(f, svd_rmse, main = "Chart 14: Number of Features vs RMSE")
+f <- f[which.min(svd_rmse)]
+```
+
+# 3. Results
+
+## Predict on test set and evaluate with RMSE
+Finally our model is a hybrid model with the combination of baseline predictors, time bias predictors and SVD, shown as below, where $\vec{u_u}$ is the feature vector of user $u$, and $\vec{v_i}$ is the feature vector of movie $i$.
+$$
+\tag{11}
+\hat{r_{u,i}} = \hat{\mu} + \hat{b_{u}} + \hat{b_{i}} + \hat{b_{ry}} + \hat{b_{rm}} + \vec{u_u}\Sigma_{55}{\vec{v_i}}^T
+$$
+Before we validate with **test_set**, we want to see if our model takes those user-movie interactions into account or not, or in other words, if the preference pattern is eliminated or further weakened. We again check the residual image from this model with the same data set we used to produce the previous two data images (chart 12 & 13), this time we only generate the image of the final model's residual. Final residual's formula and images are as below. 
+$$
+\tag{12}
+res_{u,i}=r_{u,i}-\hat{r_{u,i}} = r_{u,i} - (\hat{\mu} + \hat{b_{u}} + \hat{b_{i}} + \hat{b_{ry}} + \hat{b_{rm}} + \vec{u_u}\Sigma_{55}{\vec{v_i}}^T)
+$$
+![Final Residual Image](Final_res.png)
+
+From the image, we can see the preference pattern is weakened considerably compared with the residual image of the baseline + time biases model, indicating the SVD model works. 
+
+As always, let's check its performance by predicting on **test_set** and evaluating the result with RMSE. 
+```{r final_rmse, echo=FALSE, eval=TRUE}
+load("rmse_b_t_reg_svd.Rda")
+print(paste0("RMSE for baseline + time biases + svd model is ", rmse_b_t_reg_svd))
+```
+RMSE drops from 0.8642656 to 0.836897, and meets our project requirement of being lower than 0.8649. 
+
+## Additional : predicting with the help of *recosystem* package
+
+We can also use *recosystem* package to build the latent factor model, which is a R wrapper of the *[LIBMF library](http://www.csie.ntu.edu.tw/~cjlin/libmf/)*.
+```{r rmse_recosystem, echo=FALSE, eval=TRUE}
+# predicting with the help of recosystem package
+load("rmse_recosystem.Rda")
+print(paste0("RMSE for latent factor model with recosystem package is ", rmse_recosystem))
+```
+The package produces more accurate model than the one built in this report, since the final RMSE on **test_set** is 0.793564. For details, please refer to references *[4]*. Code details can be found in the corresponding R file in the project package. 
+
+# 4. Conclusion
+
+## summary of the report
+
+The report is for Edx HarvardX Data Science Capstone project, which aims to build a movie recommdation system and meet the project requirement of lowering the RMSE on **test_set** to less than 0.8649. It derived three models along the analysis: baseline model, baseline + time biases model and baseline + time biases + SVD model, and demonstrated the advantage of hybrid models and reason why it makes sense to do so. The baseline + time biases + SVD model achieved the project's goal with final RMSE at 0.836897. 
+
+The report also mentioned another more accurate way of building latent factor model with the help of *recosystem* package. 
+
+## Limitations and future work
+
+### Limitations
+
+The report just derived very basic and simple models for the purpose of movie rating prediction, which is very entry-level. In fact, there are many advanced techniques and algorithms published in literatures and acdemic papers, so there is much to learn and explore.  
+
+### Future work
+Recommendation Systems are widely used in a variety of areas, such as what products to buy, what news to read, what music to listen and so on. Netflix, YouTube, Amazon and Yahoo Music all have their own Recommendation Systems in order to understand and serve their customers better. Hope after completing this program, we have the opportunity to apply these methods learnt in our work and discover more. 
+
+# References
+
+[1] Rafael A. Irizarry : Introduction to Data Science: Data Analysis and Prediction Algorithms with R, 2019
+
+[2] Yehuda Koren : The BellKor Solution to the Netflix Grand Prize, 2009
+
+[3] Jim Baglama, Lothar Reichel, B. W. Lewis : Package ‘irlba', 2019
+
+[4] Yixuan Qiu, Chih-Jen Lin, Yu-Chin Juan, Wei-Sheng Chin, Yong Zhuang, Bo-Wen Yuan, Meng-Yuan Yang, and other contributors : Package ‘recosystem’, 2017
+
